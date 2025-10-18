@@ -8,12 +8,15 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import axios from 'axios'
+import { error } from "console"
 
 type Source = {
   id: string
   type: "file" | "url" | "paste"
   title: string
-  text: string
+  text : any
+  file?: File
 }
 
 function genId() {
@@ -42,14 +45,36 @@ export function ContextUploader({ onSubmit }: { onSubmit: (text: string) => void
     setIsDragging(false)
     const files = Array.from(e.dataTransfer.files || [])
     for (const file of files) {
-      // Only text-like files for simplicity.
-      //if (!file.type.startsWith("text/") && !/\.(txt|md|csv|json)$/i.test(file.name)) continue
-      const text = await file.text()
+      // Read any file (binary or text) and store a portable representation in `text`.
+      // We encode binary files as data URLs (base64). For text files this will still work
+      // but we also attempt a plain text fallback where appropriate.
+      let text: any = ""
+      try {
+      const arrayBuffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(arrayBuffer)
+      // Convert to binary string in chunks to avoid call argument limits
+      const CHUNK = 0x8000
+      let binary = ""
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)))
+      }
+      const base64 = btoa(binary)
+      text = `data:${file.type || "application/octet-stream"};base64,${base64}`
+      } catch (e) {
+      // If arrayBuffer()/base64 fails for any reason, fall back to text() which works for text-like files.
+      try {
+        text = await file.text()
+      } catch {
+        text = ""
+      }
+      }
+
       addSource({
-        id: genId(),
-        type: "file",
-        title: file.name,
-        text,
+      id: genId(),
+      type: "file",
+      title: file.name,
+      text,
+      file,
       })
     }
   }, [])
@@ -91,12 +116,7 @@ export function ContextUploader({ onSubmit }: { onSubmit: (text: string) => void
     setPaste("")
   }
 
-  const combinedText = useMemo(() => {
-    const sep = "\n\n-----\n\n"
-    const joined = sources.map((s) => `Source (${s.type}): ${s.title}\n\n${s.text}`).join(sep)
-    return joined.length > MAX_CONTEXT_CHARS ? joined.slice(0, MAX_CONTEXT_CHARS) : joined
-  }, [sources])
-
+  
   return (
     <div className="space-y-6">
       <div
@@ -184,10 +204,34 @@ export function ContextUploader({ onSubmit }: { onSubmit: (text: string) => void
         <div className="text-xs text-muted-foreground">
           Will submit up to {MAX_CONTEXT_CHARS.toLocaleString()} characters of combined context.
         </div>
-        <Button onClick={() => onSubmit(combinedText)} >
+        <Button onClick={() => oncombineButtonClick(sources)} >
           Submit Context
         </Button>
       </div>
     </div>
   )
 }
+function oncombineButtonClick(sources: Source[]): string {
+  if (!sources || sources.length === 0) return ""
+  const formData = new FormData(); 
+  // Append the text as a Blob so FormData contains a file-like entry
+   sources.forEach((s, idx) => {
+    if (s.file) {
+      formData.append("file", s.file, s.title)
+    } else {
+      formData.append("file", new Blob([s.text], { type: " " }), `${s.title || "paste"}`)
+    }
+  })
+  axios.post('http://localhost:8080/upload', formData, {
+    headers:{
+      "X-Requested-With": "XMLHttpRequest"
+    } 
+  }).then(response => {
+    console.log(response.data);
+  }).catch(err => {
+    console.log(err);
+  });
+
+  return "response reached the frontend"
+}
+
